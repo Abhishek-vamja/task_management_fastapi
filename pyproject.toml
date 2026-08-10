@@ -8,6 +8,7 @@ dependencies = [
     "alembic>=1.18.5",
     "fastapi[standard]>=0.141.1",
     "groq>=1.6.0",
+    "psycopg2-binary>=2.9.12",
     "psycopg[binary]>=3.3.4",
     "pwdlib[argon2]>=0.3.0",
     "pyjwt>=2.13.0",
