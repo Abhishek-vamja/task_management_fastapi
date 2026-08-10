@@ -10,3 +10,4 @@ wheels/
 .venv
 .qodo
 .env
+task_management.code-workspace
