@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from apps.database import get_db
 from apps.security import verify_password, create_access_token
 from apps.users import crud
+from apps.boards import crud as board_crud
 from apps.users.schemas import UserCreate, UserOut, Token
 from apps.auth.dependencies import get_current_user
 from apps.users.models import User
@@ -22,16 +23,19 @@ router = APIRouter(
 def register(
     user_in: UserCreate,
     background_tasks: BackgroundTasks,
+    invite_token: str | None = None,
     db: Session = Depends(get_db)
 ):
     """Register a new user account.
 
     Checks if username or email already exists, hashes password, creates user,
+    automatically accepts any pending board invitations matching the email or invite token,
     and dispatches a welcome email via Brevo in the background.
 
     Args:
         user_in (UserCreate): Registration input schema containing username, email, and password.
         background_tasks (BackgroundTasks): FastAPI background tasks dependency.
+        invite_token (str | None): Optional invitation token from invite link.
         db (Session): Database session dependency.
 
     Raises:
@@ -40,7 +44,7 @@ def register(
     Returns:
         UserOut: Output schema containing created user details excluding password.
     """
-    if crud.get_user_by_username(db, username=user_in.username):
+    if user_in.username and crud.get_user_by_username(db, username=user_in.username):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered"
@@ -53,6 +57,9 @@ def register(
         )
 
     user = crud.create_user(db, user_data=user_in)
+
+    # Process any pending board invitations for this user (by token or matching email)
+    board_crud.process_pending_invitations_for_user(db, user=user, invite_token=invite_token)
 
     # Dispatch welcome email asynchronously via Brevo (Bravo) service
     background_tasks.add_task(send_welcome_email, email=user.email, username=user.username)

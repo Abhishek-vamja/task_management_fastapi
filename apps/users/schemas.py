@@ -5,9 +5,10 @@ from pydantic import BaseModel, EmailStr, ConfigDict
 
 class UserCreate(BaseModel):
     """Schema for user registration request payload."""
-    username: str
+    username: str | None = None
     email: EmailStr
     password: str
+    full_name: str | None = None
 
 
 class UserOut(BaseModel):
@@ -15,6 +16,7 @@ class UserOut(BaseModel):
     id: int
     username: str
     email: EmailStr
+    full_name: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

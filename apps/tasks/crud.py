@@ -79,9 +79,34 @@ def create_task(db: Session, task_data: TaskCreate, user_id: int) -> Task:
         user_id=user_id,
         title=task_data.title,
         description=task_data.description,
-        completed=task_data.completed
+        completed=task_data.completed,
+        status=task_data.status,
+        priority=task_data.priority,
+        tag=task_data.tag,
+        assignee_id=task_data.assignee_id,
+        board_id=task_data.board_id,
+        position=task_data.position
     )
     db.add(db_task)
     db.commit()
     db.refresh(db_task)
     return db_task
+
+
+def update_task(db: Session, task: Task, task_data) -> Task:
+    """Update an existing Task with new data.
+
+    Args:
+        db (Session): Database session.
+        task (Task): Existing Task model instance to update.
+        task_data: Task update input schema.
+
+    Returns:
+        Task: Updated and refreshed Task model instance.
+    """
+    update_data = task_data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(task, key, value)
+    db.commit()
+    db.refresh(task)
+    return task

@@ -56,11 +56,22 @@ def create_user(db: Session, user_data: UserCreate) -> User:
     Returns:
         User: Newly created and refreshed User model instance.
     """
+    username = user_data.username
+    if not username:
+        base = user_data.email.split('@')[0]
+        username = base
+        # Ensure uniqueness in case of conflict
+        counter = 1
+        while db.scalars(select(User).where(User.username == username)).first() is not None:
+            username = f"{base}_{counter}"
+            counter += 1
+
     hashed_pwd = hash_password(user_data.password)
     db_user = User(
-        username=user_data.username,
+        username=username,
         email=user_data.email,
-        password=hashed_pwd
+        password=hashed_pwd,
+        full_name=user_data.full_name
     )
     db.add(db_user)
     db.commit()
