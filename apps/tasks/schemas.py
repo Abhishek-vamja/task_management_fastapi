@@ -63,8 +63,8 @@ class FlowAI(BaseModel):
 class FlowAIOut(BaseModel):
     """Schema for FlowAI response output."""
 
-    question : str
-    is_static : bool = False
-    answer : str
+    question: str
+    is_static: bool = False
+    answer: str | None = None
     
     model_config = ConfigDict(from_attributes=True)

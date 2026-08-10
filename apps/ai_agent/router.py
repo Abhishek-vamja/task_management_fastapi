@@ -302,14 +302,18 @@ def ai_chat(
 @router.get("/history", response_model=PaginatedResponse[FlowAIOut], status_code=status.HTTP_200_OK)
 def ai_chat_history(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user), 
-    page: int = Query(1, ge=1), page_size: int = Query(10, ge=1)
+    page: int = Query(1, ge=1), page_size: int = Query(50, ge=1)
 ):
-    return ai_crud.get_ai_chat_history_paginated(
+    res = ai_crud.get_ai_chat_history_paginated(
         db=db,
         user_id=current_user.id,
         page=page,
         limit=page_size
     )
+    for item in res.get("items", []):
+        if item.answer is None:
+            item.answer = ""
+    return res
 
 
 # --- Handler functions for AI operations ---
