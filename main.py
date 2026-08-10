@@ -49,7 +49,7 @@ app.include_router(ai_agent_router)
 app.include_router(boards_router)
 
 
-@app.get("/health-check")
+@app.get("/")
 def read_root() -> dict[str, str]:
     """Root endpoint providing welcome message and interactive docs link.
 
@@ -57,3 +57,12 @@ def read_root() -> dict[str, str]:
         dict: A dictionary containing welcome message and documentation path.
     """
     return {"message": "Welcome to Task Management API", "docs": "/docs"}
+
+@app.get("/health-check")
+def read_root() -> dict[str, str]:
+    """Root endpoint providing welcome message and interactive docs link.
+
+    Returns:
+        dict: A dictionary containing welcome message and documentation path.
+    """
+    return {"message": "ok", "docs": "/docs"}
