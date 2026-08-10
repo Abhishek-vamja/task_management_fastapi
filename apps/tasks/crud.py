@@ -110,3 +110,22 @@ def update_task(db: Session, task: Task, task_data) -> Task:
     db.commit()
     db.refresh(task)
     return task
+
+
+def get_tasks_by_user(db: Session, user_id: int) -> list[Task]:
+    """Fetch all tasks created by or assigned to a specific user.
+
+    Args:
+        db (Session): Database session.
+        user_id (int): User ID.
+
+    Returns:
+        list[Task]: List of task model instances.
+    """
+    return list(
+        db.scalars(
+            select(Task)
+            .where((Task.user_id == user_id) | (Task.assignee_id == user_id))
+            .order_by(Task.id.desc())
+        ).all()
+    )

@@ -1,5 +1,6 @@
 from apps.ai_agent.models import AIChat
 from apps.ai_agent.prompts import CRUD_PROMPT
+from apps.tasks.models import Task
 from apps.tasks.schemas import FlowAI, FlowAIOut, TaskCreate, TaskUpdate
 from apps.database import get_db
 from apps.pagination import PaginatedResponse
@@ -12,7 +13,7 @@ from apps.users.models import User
 from apps.boards.schemas import BoardCreate
 
 from services.groq import GroqAI
-from sqlalchemy import update
+from sqlalchemy import update, select
 from sqlalchemy.orm import Session
 from fastapi import APIRouter, Depends, Query, status
 import json
@@ -396,21 +397,52 @@ def handle_update_board(db: Session, user_id: int, response_data: dict, ai_chat:
         return FlowAIOut(question=ai_chat.question, is_static=False, answer=f"Failed to prepare board update draft: {str(e)}")
 
 
+def find_task_by_title_or_id(db: Session, user_id: int, task_id: any, task_title: str | None) -> Task | None:
+    """Helper to locate a task by ID or fuzzy title matching across user's tasks."""
+    if task_id:
+        try:
+            t = crud.get_task_by_id(db, int(task_id))
+            if t:
+                return t
+        except (ValueError, TypeError):
+            pass
+
+    if task_title:
+        user_tasks = crud.get_tasks_by_user(db, user_id)
+        if not user_tasks:
+            from apps.tasks.models import Task
+            user_tasks = list(db.scalars(select(Task)).all())
+            
+        clean_query = str(task_title).strip().lower()
+        # 1. Exact match
+        for t in user_tasks:
+            if clean_query == t.title.lower().strip():
+                return t
+        # 2. Substring match
+        for t in user_tasks:
+            if clean_query in t.title.lower() or t.title.lower() in clean_query:
+                return t
+        # 3. Fuzzy ratio match using SequenceMatcher
+        import difflib
+        best_match = None
+        best_ratio = 0.4
+        for t in user_tasks:
+            ratio = difflib.SequenceMatcher(None, clean_query, t.title.lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = t
+        if best_match:
+            return best_match
+
+    return None
+
+
 def handle_delete_task(db: Session, user_id: int, response_data: dict, ai_chat: AIChat) -> FlowAIOut:
     """Prompt user for confirmation before deleting a task."""
     try:
         task_id = response_data.get("task_id") or response_data.get("id")
-        task = None
-        if task_id:
-            task = crud.get_task_by_id(db, int(task_id))
-        
-        if not task and response_data.get("task_title"):
-            user_tasks = crud.get_tasks_by_user(db, user_id)
-            title_query = response_data["task_title"].lower()
-            for t in user_tasks:
-                if title_query in t.title.lower():
-                    task = t
-                    break
+        task_title = response_data.get("task_title") or response_data.get("title")
+        task = find_task_by_title_or_id(db, user_id, task_id, task_title)
 
         if not task:
             return FlowAIOut(question=ai_chat.question, is_static=False, answer="Task not found to delete. Please specify a valid task ID or title.")
@@ -440,30 +472,25 @@ def handle_move_status(db: Session, user_id: int, response_data: dict, ai_chat: 
     """Move task to a different status column directly."""
     try:
         task_id = response_data.get("task_id") or response_data.get("id")
+        task_title = response_data.get("task_title") or response_data.get("title")
         new_status = response_data.get("status", "in_progress").lower().replace(" ", "_")
-        task = None
-        if task_id:
-            task = crud.get_task_by_id(db, int(task_id))
-        elif response_data.get("task_title"):
-            user_tasks = crud.get_tasks_by_user(db, user_id)
-            for t in user_tasks:
-                if response_data["task_title"].lower() in t.title.lower():
-                    task = t
-                    break
+        
+        task = find_task_by_title_or_id(db, user_id, task_id, task_title)
 
         if not task:
             return FlowAIOut(question=ai_chat.question, is_static=False, answer="Task not found. Please provide a valid task ID or title.")
 
         task.status = new_status
-        if new_status == "done":
+        if new_status in ["done", "completed"]:
             task.completed = True
-        elif new_status == "todo":
+        elif new_status in ["todo", "to_do", "in_progress"]:
             task.completed = False
             
         db.commit()
         db.refresh(task)
 
-        answer = f"📌 Task '{task.title}' (ID: {task.id}) status moved to '{new_status}' successfully!"
+        formatted_status = new_status.replace("_", " ").title()
+        answer = f"📌 Task '{task.title}' (ID: {task.id}) status moved to '{formatted_status}' successfully!"
 
         ai_chat.ai_answer = json.dumps({"status": "moved_status", "task_id": task.id})
         ai_chat.answer = answer
@@ -477,17 +504,10 @@ def handle_assign_task(db: Session, user_id: int, response_data: dict, ai_chat: 
     """Assign task to a team member board-wise."""
     try:
         task_id = response_data.get("task_id") or response_data.get("id")
+        task_title = response_data.get("task_title") or response_data.get("title")
         assignee_name = response_data.get("assignee") or response_data.get("assignee_id")
-        task = None
-
-        if task_id:
-            task = crud.get_task_by_id(db, int(task_id))
-        elif response_data.get("task_title"):
-            user_tasks = crud.get_tasks_by_user(db, user_id)
-            for t in user_tasks:
-                if response_data["task_title"].lower() in t.title.lower():
-                    task = t
-                    break
+        
+        task = find_task_by_title_or_id(db, user_id, task_id, task_title)
 
         if not task:
             return FlowAIOut(question=ai_chat.question, is_static=False, answer="Task not found. Please specify a valid task ID or title.")
