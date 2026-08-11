@@ -25,8 +25,30 @@ from apps.ai_agent.router import router as ai_agent_router
 from apps.boards.router import router as boards_router
 from apps.organizations.router import router as organizations_router
 
-# Create database tables automatically
+def auto_migrate_db_columns():
+    """Ensure newly added columns exist in production PostgreSQL database tables on startup."""
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            # 1. Add missing columns to boards
+            conn.execute(text("ALTER TABLE boards ADD COLUMN IF NOT EXISTS organization_id INTEGER;"))
+            
+            # 2. Add missing columns to tasks
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS organization_id INTEGER;"))
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ticket_key VARCHAR;"))
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS task_number INTEGER;"))
+            
+            # 3. Add missing columns to ai_chats
+            conn.execute(text("ALTER TABLE ai_chats ADD COLUMN IF NOT EXISTS session_id VARCHAR;"))
+            conn.execute(text("ALTER TABLE ai_chats ADD COLUMN IF NOT EXISTS task_id INTEGER;"))
+            
+            print("[AUTO-MIGRATION] Database schema columns verified and migrated successfully.")
+    except Exception as e:
+        print(f"[AUTO-MIGRATION WARNING] Could not apply column migrations: {e}")
+
+# Create database tables & run automatic column migrations
 Base.metadata.create_all(bind=engine)
+auto_migrate_db_columns()
 
 app = FastAPI(
     title="Task Management API",
