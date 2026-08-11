@@ -7,6 +7,7 @@ class BoardCreate(BaseModel):
     """Schema for board creation request payload."""
     name: str
     description: str | None = None
+    organization_id: int | None = None
     type: str = "team"
     privacy: str = "private"
     accent_color: str = "blue"
@@ -20,6 +21,7 @@ class BoardOut(BaseModel):
     name: str
     description: str | None
     owner_id: int
+    organization_id: int | None = None
     type: str
     privacy: str
     accent_color: str

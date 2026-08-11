@@ -29,13 +29,18 @@ def create_new_board(
     return crud.create_board(db, board_data=board_in, owner_id=current_user.id)
 
 
+from fastapi import APIRouter, Depends, Query, Header, status, HTTPException
+
 @router.get("/boards/", response_model=list[BoardOut])
 def read_my_boards(
+    organization_id: int | None = Query(None),
+    x_organization_id: int | None = Header(None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get all boards the current user has access to."""
-    return crud.get_user_boards(db, user_id=current_user.id)
+    """Get all boards the current user has access to, filtered by organization_id."""
+    target_org_id = organization_id or x_organization_id
+    return crud.get_user_boards(db, user_id=current_user.id, organization_id=target_org_id)
 
 
 @router.get("/boards/{board_id}", response_model=BoardOut)

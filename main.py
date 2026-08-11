@@ -15,6 +15,7 @@ from apps.tasks.models import Task
 from apps.users.models import User
 from apps.ai_agent.models import AIChat
 from apps.boards.models import Board, BoardMember, Invitation
+from apps.organizations.models import Organization, OrganizationMember, OrganizationInvite
 
 # Import routers
 from apps.auth.router import router as auth_router
@@ -22,6 +23,7 @@ from apps.users.router import router as users_router
 from apps.tasks.router import router as tasks_router
 from apps.ai_agent.router import router as ai_agent_router
 from apps.boards.router import router as boards_router
+from apps.organizations.router import router as organizations_router
 
 # Create database tables automatically
 Base.metadata.create_all(bind=engine)
@@ -47,6 +49,7 @@ app.include_router(users_router)
 app.include_router(tasks_router)
 app.include_router(ai_agent_router)
 app.include_router(boards_router)
+app.include_router(organizations_router)
 
 
 @app.get("/")

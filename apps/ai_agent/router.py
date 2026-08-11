@@ -1,7 +1,7 @@
 from apps.ai_agent.models import AIChat
 from apps.ai_agent.prompts import CRUD_PROMPT
 from apps.tasks.models import Task
-from apps.tasks.schemas import FlowAI, FlowAIOut, TaskCreate, TaskUpdate
+from apps.tasks.schemas import FlowAI, FlowAIOut, TaskCreate, TaskUpdate, AISessionOut
 from apps.database import get_db
 from apps.pagination import PaginatedResponse
 from apps.ai_agent import crud as ai_crud
@@ -11,11 +11,12 @@ from apps.boards import crud as board_crud
 from apps.auth.dependencies import get_current_user
 from apps.users.models import User
 from apps.boards.schemas import BoardCreate
+from apps.organizations.models import Organization, OrganizationMember
 
 from services.groq import GroqAI
 from sqlalchemy import update, select
 from sqlalchemy.orm import Session
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Header, status, HTTPException
 import json
 import re
 
@@ -25,19 +26,64 @@ router = APIRouter(
     tags=["AI Chat"]
 )
 
-# --- AI Chat Endpoints ---
-@router.post("/", response_model=FlowAIOut, status_code=status.HTTP_200_OK)
-def ai_chat(
-    ai_question : FlowAI,
+
+def get_workspace_entities_summary(db: Session, user_id: int) -> str:
+    """Summarize active user boards and recent tasks for AI memory recall."""
+    boards = board_crud.get_user_boards(db, user_id)
+    b_summary = [f"- Board '{b.name}' (ID: {b.id}, Columns: {', '.join(b.columns)})" for b in boards] if boards else ["- No boards created yet"]
+    
+    tasks = crud.get_tasks_by_user(db, user_id)[:5]
+    t_summary = [f"- Task #{t.id} '{t.title}' (Status: {t.status})" for t in tasks] if tasks else ["- No tasks created yet"]
+
+    return f"CURRENT WORKSPACE BOARDS:\n" + "\n".join(b_summary) + "\n\nCURRENT RECENT TASKS:\n" + "\n".join(t_summary)
+
+
+# --- Multi-Session Router Endpoints ---
+
+@router.post("/sessions", response_model=AISessionOut, status_code=status.HTTP_201_CREATED)
+def create_session(
+    title: str = Query("New Chat"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Call the AI chat to create/update tasks or boards based on user input.
+    """Create a new AI chat thread session."""
+    return ai_crud.create_ai_session(db=db, user_id=current_user.id, title=title)
 
-    Args:
-        db (Session): Database session dependency.
-        current_user (User): Authenticated user dependency.
-    """
+
+@router.get("/sessions", response_model=list[AISessionOut], status_code=status.HTTP_200_OK)
+def list_sessions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """List all AI chat thread sessions for authenticated user."""
+    return ai_crud.get_user_ai_sessions(db=db, user_id=current_user.id)
+
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Delete an AI chat thread session and all its messages."""
+    success = ai_crud.delete_ai_session(db=db, session_id=session_id, user_id=current_user.id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return None
+
+
+# --- AI Chat Processing Endpoint ---
+
+@router.post("/", response_model=FlowAIOut, status_code=status.HTTP_200_OK)
+def ai_chat(
+    ai_question : FlowAI,
+    x_organization_id: int | None = Header(None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Call the AI chat to create/update tasks or boards based on user input."""
+    session_id = ai_question.session_id
+
     if ai_question.is_static:
         if ai_question.question.lower() == "create task":
             return {"message": "Please provide task details to create a new task."}
@@ -59,59 +105,50 @@ def ai_chat(
                 description=form_data.get("description"),
                 status=form_data.get("status", "todo"),
                 priority=form_data.get("priority", "medium"),
-                tag=form_data.get("tag"),
-                assignee_id=form_data.get("assignee_id"),
+                tag=form_data.get("tag") or "Task",
                 board_id=resolved_board_id,
+                assignee_id=form_data.get("assignee_id"),
                 position=0
             )
-            task = crud.create_task(db, task_data=task_data, user_id=current_user.id)
-            
-            details = []
-            details.append(f"**Title**: {task.title}")
-            if task.description:
-                details.append(f"**Description**: {task.description}")
-            details.append(f"**Status**: {task.status}")
-            details.append(f"**Priority**: {task.priority}")
-            if task.tag:
-                details.append(f"**Tag**: {task.tag}")
+            task = crud.create_task(db, task_data=task_data, user_id=current_user.id, organization_id=x_organization_id)
+            board_obj = None
             if resolved_board_id:
                 board_obj = board_crud.get_board_by_id(db, resolved_board_id)
-                if board_obj:
-                    details.append(f"**Board**: {board_obj.name}")
+
+            board_info = f", Board: '{board_obj.name}'" if board_obj else ""
+            answer = f"✅ Task '{task.title}' created successfully! (ID: {task.id}{board_info})"
             
-            details_str = "\n".join([f"• {d}" for d in details])
-            answer = f"✅ Task created successfully! (ID: {task.id})\n\n{details_str}"
-            
-            current_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=f"Create task: {task.title}")
+            current_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=f"Create task: {task.title}", session_id=session_id)
             current_chat.answer = answer
-            current_chat.ai_answer = json.dumps({"status": "created", "task_id": task.id})
-            current_chat.task_id = task.id
+            current_chat.ai_answer = json.dumps({"status": "created_task", "task_id": task.id})
             db.commit()
             db.refresh(current_chat)
             
             return FlowAIOut(
                 question=f"Create task: {task.title}",
                 is_static=False,
-                answer=answer
+                answer=answer,
+                session_id=session_id
             )
         except Exception as ex:
             import traceback
             traceback.print_exc()
             answer = f"Failed to create task from form: {str(ex)}"
-            current_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=ai_question.question[:50])
+            current_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=ai_question.question[:50], session_id=session_id)
             current_chat.answer = answer
             db.commit()
-            return FlowAIOut(question=ai_question.question[:50], is_static=False, answer=answer)
+            return FlowAIOut(question=ai_question.question[:50], is_static=False, answer=answer, session_id=session_id)
 
-    # 1. Intercept Yes/No response for pending confirmations (Task Create, Board Create, Board Update, Task Delete)
-    recent_chats = ai_crud.get_recent_ai_chats(db, user_id=current_user.id, limit=1)
+    # 1. Intercept Yes/No response for pending confirmations (Task Create, Board Create, Board Update, Task Delete, Board Delete)
+    recent_chats = ai_crud.get_recent_ai_chats(db, user_id=current_user.id, limit=1, session_id=session_id)
     if recent_chats:
         last_chat = recent_chats[0]
         is_confirmation_prompt = last_chat.answer and (
             "Would you like me to create this task?" in last_chat.answer or
             "Would you like me to create this board?" in last_chat.answer or
             "Would you like me to update this board?" in last_chat.answer or
-            "Are you sure you want to delete task" in last_chat.answer
+            "Are you sure you want to delete task" in last_chat.answer or
+            "Are you sure you want to delete board" in last_chat.answer
         )
         if is_confirmation_prompt:
             cleaned_input = ai_question.question.strip().lower()
@@ -144,6 +181,16 @@ def ai_chat(
                             answer = f"✅ Board '{board.name}' updated successfully!"
                         else:
                             answer = "Board not found for update."
+
+                    elif action_type == "delete_board":
+                        board_id = draft_data.get("board_id")
+                        board = board_crud.get_board_by_id(db, board_id)
+                        if board:
+                            b_name = board.name
+                            board_crud.delete_board(db, board)
+                            answer = f"🗑️ Board '{b_name}' (ID: {board_id}) deleted successfully!"
+                        else:
+                            answer = f"Board #{board_id} not found."
 
                     elif action_type == "delete_task":
                         task_id = draft_data.get("task_id")
@@ -198,10 +245,10 @@ def ai_chat(
                             assignee_id=resolved_assignee_id,
                             position=0
                         )
-                        task = crud.create_task(db, task_data=task_data, user_id=current_user.id)
+                        task = crud.create_task(db, task_data=task_data, user_id=current_user.id, organization_id=x_organization_id)
                         answer = f"✅ Task created successfully! (ID: {task.id}, Title: {task.title})"
 
-                    current_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=ai_question.question)
+                    current_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=ai_question.question, session_id=session_id)
                     current_chat.answer = answer
                     current_chat.ai_answer = json.dumps({"status": "executed"})
                     db.commit()
@@ -210,21 +257,22 @@ def ai_chat(
                     return FlowAIOut(
                         question=ai_question.question,
                         is_static=ai_question.is_static,
-                        answer=answer
+                        answer=answer,
+                        session_id=session_id
                     )
                 except Exception as ex:
                     import traceback
                     traceback.print_exc()
                     db.rollback()
                     answer = f"Failed to process confirmation: {str(ex)}"
-                    current_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=ai_question.question)
+                    current_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=ai_question.question, session_id=session_id)
                     current_chat.answer = answer
                     db.commit()
-                    return FlowAIOut(question=ai_question.question, is_static=ai_question.is_static, answer=answer)
+                    return FlowAIOut(question=ai_question.question, is_static=ai_question.is_static, answer=answer, session_id=session_id)
             
             elif cleaned_input in ["no", "n", "nope", "cancel", "don't do it", "no thanks", "no, thanks"]:
                 answer = "Action cancelled."
-                current_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=ai_question.question)
+                current_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=ai_question.question, session_id=session_id)
                 current_chat.answer = answer
                 current_chat.ai_answer = json.dumps({"status": "cancelled"})
                 db.commit()
@@ -233,23 +281,27 @@ def ai_chat(
                 return FlowAIOut(
                     question=ai_question.question,
                     is_static=ai_question.is_static,
-                    answer=answer
+                    answer=answer,
+                    session_id=session_id
                 )
 
-    # 2. Fetch and format up to 10 recent completed chat turns (oldest first)
-    all_recent_chats = ai_crud.get_recent_ai_chats(db, user_id=current_user.id, limit=10)
+    # 2. Fetch recent conversation turns + active workspace entities summary
+    all_recent_chats = ai_crud.get_recent_ai_chats(db, user_id=current_user.id, limit=4, session_id=session_id)
     formatted_history = []
     for chat in reversed(all_recent_chats):
-        formatted_history.append(f"User: {chat.question}\nAI: {chat.answer}")
-    history_str = "\n\n".join(formatted_history) if formatted_history else "No previous history."
+        if chat.answer:
+            formatted_history.append(f"User: {chat.question}\nAI: {chat.answer[:200]}")
+            
+    workspace_context = get_workspace_entities_summary(db, current_user.id)
+    history_str = workspace_context + "\n\nPREVIOUS RECENT CONVERSATION TURNS:\n" + ("\n\n".join(formatted_history) if formatted_history else "No previous history.")
 
-    # Format the question for the AI agent using the CRUD_PROMPT template
+    # Format question using CRUD_PROMPT template
     question = CRUD_PROMPT.format(
         user_input=ai_question.question,
         user_input_history=history_str
     )
 
-    ai_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=ai_question.question)
+    ai_chat = ai_crud.create_ai_chat(db, user_id=current_user.id, question=ai_question.question, session_id=session_id)
    
     groq_ai = GroqAI()
     response = groq_ai.call_ai(question)
@@ -280,6 +332,8 @@ def ai_chat(
         "delete": "handle_delete_task",
         "create_board": "handle_create_board",
         "update_board": "handle_update_board",
+        "delete_board": "handle_delete_board",
+        "refine_draft": "handle_refine_draft",
         "other": "handle_other_request"
     }
     
@@ -296,19 +350,22 @@ def ai_chat(
     return FlowAIOut(
         question=ai_question.question,
         is_static=ai_question.is_static,
-        answer=answer
+        answer=answer,
+        session_id=session_id
     )
 
 @router.get("/history", response_model=PaginatedResponse[FlowAIOut], status_code=status.HTTP_200_OK)
 def ai_chat_history(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user), 
-    page: int = Query(1, ge=1), page_size: int = Query(50, ge=1)
+    session_id: str | None = Query(None),
+    page: int = Query(1, ge=1), page_size: int = Query(50, ge=1),
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
     res = ai_crud.get_ai_chat_history_paginated(
         db=db,
         user_id=current_user.id,
         page=page,
-        limit=page_size
+        limit=page_size,
+        session_id=session_id
     )
     for item in res.get("items", []):
         if item.answer is None:
@@ -402,31 +459,38 @@ def handle_update_board(db: Session, user_id: int, response_data: dict, ai_chat:
 
 
 def find_task_by_title_or_id(db: Session, user_id: int, task_id: any, task_title: str | None) -> Task | None:
-    """Helper to locate a task by ID or fuzzy title matching across user's tasks."""
+    """Helper to locate a task by unique ticket_key (e.g. FAA-1), numeric ID, or fuzzy title matching across user's tasks."""
+    user_tasks = crud.get_tasks_by_user(db, user_id)
+    if not user_tasks:
+        user_tasks = list(db.scalars(select(Task)).all())
+
+    # 1. Match by Unique Ticket Key (e.g. FAA-1, FAA-2, LUC-3)
+    raw_query = str(task_id or task_title or "").strip().upper()
+    if raw_query:
+        clean_key = raw_query.replace(" ", "-")
+        for t in user_tasks:
+            if t.ticket_key and (t.ticket_key.upper() == raw_query or t.ticket_key.upper() == clean_key):
+                return t
+
+    # 2. Match by Numeric ID
     if task_id:
         try:
-            t = crud.get_task_by_id(db, int(task_id))
-            if t:
-                return t
+            numeric_id = int(task_id)
+            for t in user_tasks:
+                if t.id == numeric_id:
+                    return t
         except (ValueError, TypeError):
             pass
 
+    # 3. Match by Task Title (exact, substring, fuzzy)
     if task_title:
-        user_tasks = crud.get_tasks_by_user(db, user_id)
-        if not user_tasks:
-            from apps.tasks.models import Task
-            user_tasks = list(db.scalars(select(Task)).all())
-            
         clean_query = str(task_title).strip().lower()
-        # 1. Exact match
         for t in user_tasks:
             if clean_query == t.title.lower().strip():
                 return t
-        # 2. Substring match
         for t in user_tasks:
             if clean_query in t.title.lower() or t.title.lower() in clean_query:
                 return t
-        # 3. Fuzzy ratio match using SequenceMatcher
         import difflib
         best_match = None
         best_ratio = 0.4
@@ -712,3 +776,158 @@ def handle_other_request(db: Session, user_id: int, response_data: dict, ai_chat
     ai_chat.answer = answer
     db.commit()
     return FlowAIOut(question=ai_chat.question if hasattr(ai_chat, 'question') else "Question", is_static=False, answer=answer)
+
+
+def handle_delete_board(db: Session, user_id: int, response_data: dict, ai_chat: AIChat) -> FlowAIOut:
+    """Prompt user for confirmation before deleting a project board."""
+    try:
+        board_name = response_data.get("board_name")
+        board_id = response_data.get("board_id")
+        board = None
+
+        if board_id:
+            board = board_crud.get_board_by_id(db, int(board_id))
+        elif board_name:
+            board = board_crud.get_board_by_name(db, board_name, user_id)
+
+        if not board:
+            user_boards = board_crud.get_user_boards(db, user_id)
+            if user_boards:
+                board = user_boards[0]
+
+        if not board:
+            return FlowAIOut(question=ai_chat.question, is_static=False, answer="Board not found to delete.")
+
+        draft = {
+            "action_type": "delete_board",
+            "board_id": board.id,
+            "board_name": board.name
+        }
+
+        ai_chat.ai_answer = json.dumps(draft)
+
+        answer = (
+            f"⚠️ Are you sure you want to delete board '{board.name}' (ID: {board.id}) and all its associated tasks?\n\n"
+            f"This action cannot be undone. Please confirm: (Yes/No)"
+        )
+
+        ai_chat.answer = answer
+        db.commit()
+        db.refresh(ai_chat)
+        return FlowAIOut(question=ai_chat.question, is_static=False, answer=answer)
+    except Exception as e:
+        return FlowAIOut(question=ai_chat.question, is_static=False, answer=f"Failed to prepare delete board request: {str(e)}")
+
+
+def handle_update_task(db: Session, user_id: int, response_data: dict, ai_chat: AIChat) -> FlowAIOut:
+    """Update task fields directly in DB based on AI extracted intent."""
+    try:
+        task_id = response_data.get("task_id") or response_data.get("id")
+        task_title = response_data.get("task_title") or response_data.get("title")
+        
+        task = find_task_by_title_or_id(db, user_id, task_id, task_title)
+        if not task:
+            return FlowAIOut(question=ai_chat.question, is_static=False, answer="Task not found to update. Please provide a valid task ID or title.")
+
+        changes = []
+        if response_data.get("title") and response_data["title"] != task.title:
+            task.title = response_data["title"]
+            changes.append(f"Title → '{task.title}'")
+
+        if response_data.get("description"):
+            task.description = response_data["description"]
+            changes.append("Description updated")
+
+        if response_data.get("priority"):
+            task.priority = response_data["priority"].lower()
+            changes.append(f"Priority → '{task.priority.capitalize()}'")
+
+        if response_data.get("status"):
+            st = response_data["status"].lower().replace(" ", "_")
+            task.status = st
+            if st in ["done", "completed"]:
+                task.completed = True
+            elif st in ["todo", "to_do", "in_progress"]:
+                task.completed = False
+            changes.append(f"Status → '{st.replace('_', ' ').title()}'")
+
+        if response_data.get("tag"):
+            task.tag = response_data["tag"]
+            changes.append(f"Tag → '{task.tag}'")
+
+        if response_data.get("assignee"):
+            assignee_name = str(response_data["assignee"]).strip()
+            target_user = None
+            if assignee_name.lower() in ["me", "myself", "current user", "i"]:
+                target_user = db.query(User).filter(User.id == user_id).first()
+            else:
+                all_users = db.query(User).all()
+                for u in all_users:
+                    if assignee_name.lower() in u.email.lower() or assignee_name.lower() in (u.full_name or "").lower() or assignee_name.lower() in u.username.lower():
+                        target_user = u
+                        break
+            if target_user:
+                task.assignee_id = target_user.id
+                changes.append(f"Assignee → {target_user.full_name or target_user.username}")
+
+        db.commit()
+        db.refresh(task)
+
+        changes_str = ", ".join(changes) if changes else "No major field changes"
+        answer = f"✏️ Task '{task.title}' (ID: {task.id}) updated successfully! ({changes_str})"
+
+        ai_chat.ai_answer = json.dumps({"status": "updated_task", "task_id": task.id})
+        ai_chat.answer = answer
+        db.commit()
+        return FlowAIOut(question=ai_chat.question, is_static=False, answer=answer)
+    except Exception as e:
+        return FlowAIOut(question=ai_chat.question, is_static=False, answer=f"Failed to update task: {str(e)}")
+
+
+def handle_refine_draft(db: Session, user_id: int, response_data: dict, ai_chat: AIChat) -> FlowAIOut:
+    """Refine fields of an active task draft or board draft card."""
+    try:
+        recent_chats = ai_crud.get_recent_ai_chats(db, user_id=user_id, limit=2)
+        target_chat = None
+        for c in recent_chats:
+            if c.ai_answer and ("action_type" in c.ai_answer or "ticket_type" in c.ai_answer):
+                target_chat = c
+                break
+
+        if not target_chat:
+            return FlowAIOut(question=ai_chat.question, is_static=False, answer="No active draft card found to refine.")
+
+        draft_data = json.loads(target_chat.ai_answer)
+        for key in ["title", "description", "status", "priority", "tag", "board_name", "assignee", "new_name", "columns"]:
+            if response_data.get(key):
+                draft_data[key] = response_data[key]
+
+        target_chat.ai_answer = json.dumps(draft_data)
+
+        # Formulate updated answer text
+        if draft_data.get("action_type") == "create_board":
+            answer = (
+                f"📋 I updated the draft for board '{draft_data.get('board_name')}':\n\n"
+                f"* **Board Name**: {draft_data.get('board_name')}\n"
+                f"* **Description**: {draft_data.get('description') or 'N/A'}\n"
+                f"* **Columns**: {', '.join(draft_data.get('columns', []))}\n\n"
+                f"Would you like me to create this board? (Yes/No)"
+            )
+        else:
+            answer = (
+                f"I've updated the task draft details for you:\n\n"
+                f"* **Title**: {draft_data.get('title')}\n"
+                f"* **Description**: {draft_data.get('description')}\n"
+                f"* **Status**: {draft_data.get('status', 'todo').upper()}\n"
+                f"* **Priority**: {draft_data.get('priority', 'medium').capitalize()}\n"
+                f"* **Tag**: {draft_data.get('tag', 'Task')}\n\n"
+                f"Would you like me to create this task? (Yes/No)"
+            )
+
+        target_chat.answer = answer
+        ai_chat.ai_answer = json.dumps({"status": "refined_draft", "updated_fields": list(response_data.keys())})
+        ai_chat.answer = answer
+        db.commit()
+        return FlowAIOut(question=ai_chat.question, is_static=False, answer=answer)
+    except Exception as e:
+        return FlowAIOut(question=ai_chat.question, is_static=False, answer=f"Failed to refine draft: {str(e)}")

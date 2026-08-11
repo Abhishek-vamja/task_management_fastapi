@@ -148,3 +148,66 @@ def send_invitation_email(email: str, inviter_name: str, board_name: str, invite
         print(f"[MOCK EMAIL FALLBACK] Invitation token created for {email}. Link: {invite_link}")
         return True
 
+
+def send_organization_invitation_email(email: str, inviter_name: str, org_name: str, org_key: str, invite_link: str) -> bool:
+    """Send a transactional organization invitation email using Brevo API with mock fallback."""
+    if not BREVO_API_KEY or BREVO_API_KEY.startswith("xkeysib-your-brevo"):
+        logger.warning(
+            f"[Brevo Email Service] BREVO_API_KEY is not configured. "
+            f"Simulated invitation sent to {email} for organization '{org_name}' [{org_key}]."
+        )
+        print(f"[MOCK EMAIL SENT] Organization Invite dispatched to {email} ({org_name} [{org_key}]). Link: {invite_link}")
+        return True
+
+    headers = {
+        "accept": "application/json",
+        "api-key": BREVO_API_KEY,
+        "content-type": "application/json",
+    }
+
+    payload = {
+        "sender": {
+            "name": SENDER_NAME,
+            "email": SENDER_EMAIL,
+        },
+        "to": [
+            {
+                "email": email,
+            }
+        ],
+        "subject": f"You've been invited to join '{org_name}' ({org_key}) Organization on FlowAI!",
+        "htmlContent": f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 20px auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+              <h2 style="color: #4F46E5; margin-top: 0;">Join Organization Workspace</h2>
+              <p>Hello,</p>
+              <p><strong>{inviter_name}</strong> has invited you to join their organization workspace <strong>'{org_name}'</strong> (Prefix Key: <strong>{org_key}</strong>) on FlowAI.</p>
+              <p>Click the button below to accept your invitation and join the workspace:</p>
+              <div style="text-align: center; margin: 28px 0;">
+                <a href="{invite_link}" style="background: linear-gradient(135deg, #4F46E5 0%, #3730A3 100%); color: white; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Accept Invitation</a>
+              </div>
+              <p style="font-size: 13px; color: #64748b;">Or copy and paste this link in your browser:</p>
+              <p style="font-size: 13px;"><a href="{invite_link}" style="color: #4F46E5;">{invite_link}</a></p>
+              <br/>
+              <p style="font-size: 13px; color: #94a3b8;">Best regards,<br/><strong>FlowAI Workspace Team</strong></p>
+            </div>
+          </body>
+        </html>
+        """,
+    }
+
+    try:
+        response = httpx.post(BREVO_API_URL, json=payload, headers=headers, timeout=10.0)
+        if response.status_code in (200, 201, 202):
+            logger.info(f"Organization invitation email successfully sent to {email}.")
+            return True
+        else:
+            logger.warning(f"Brevo API error ({response.status_code}). Falling back to mock email mode.")
+            print(f"[MOCK EMAIL FALLBACK] Organization Invite token created for {email}. Link: {invite_link}")
+            return True
+    except Exception as exc:
+        logger.warning(f"Error connecting to Brevo API: {exc}. Falling back to mock email mode.")
+        print(f"[MOCK EMAIL FALLBACK] Organization Invite token created for {email}. Link: {invite_link}")
+        return True
+

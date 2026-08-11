@@ -11,9 +11,18 @@ from apps.tasks.models import Task
 
 def create_board(db: Session, board_data: BoardCreate, owner_id: int) -> Board:
     """Create a new Kanban board and automatically add the owner as 'manager'."""
+    from apps.organizations import crud as org_crud
+
+    target_org_id = board_data.organization_id
+    if not target_org_id:
+        user_orgs = org_crud.get_user_organizations(db, owner_id)
+        if user_orgs:
+            target_org_id = user_orgs[0].id
+
     db_board = Board(
         name=board_data.name,
         description=board_data.description,
+        organization_id=target_org_id,
         type=board_data.type,
         privacy=board_data.privacy,
         accent_color=board_data.accent_color,
@@ -36,9 +45,11 @@ def get_board_by_id(db: Session, board_id: int) -> Board | None:
     return db.scalars(select(Board).where(Board.id == board_id)).first()
 
 
-def get_user_boards(db: Session, user_id: int) -> list[Board]:
-    """Fetch all boards a user is a member of."""
+def get_user_boards(db: Session, user_id: int, organization_id: int | None = None) -> list[Board]:
+    """Fetch all boards a user is a member of, filtered by organization_id if provided."""
     query = select(Board).join(BoardMember).where(BoardMember.user_id == user_id)
+    if organization_id:
+        query = query.where(Board.organization_id == organization_id)
     return list(db.scalars(query).all())
 
 

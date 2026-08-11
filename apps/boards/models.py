@@ -12,6 +12,7 @@ class Board(Base):
     name: Mapped[str] = mapped_column(String(100), index=True)
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True)
     type: Mapped[str] = mapped_column(String(50), default="team") # team, personal
     privacy: Mapped[str] = mapped_column(String(50), default="private") # private, public, org
     accent_color: Mapped[str] = mapped_column(String(50), default="blue")

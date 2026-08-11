@@ -38,8 +38,11 @@ class Task(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     assignee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     board_id: Mapped[int | None] = mapped_column(ForeignKey("boards.id"), nullable=True)
+    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True)
 
     # -- Model fields
+    ticket_key: Mapped[str | None] = mapped_column(String(50), index=True, nullable=True) # e.g. FAA-1
+    task_number: Mapped[int | None] = mapped_column(nullable=True)
     title: Mapped[str]
     description: Mapped[str | None]
     completed: Mapped[bool] = mapped_column(default=False)

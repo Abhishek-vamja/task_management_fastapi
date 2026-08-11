@@ -30,6 +30,8 @@ class TaskOut(BaseModel):
     tag: str | None
     assignee_id: int | None
     board_id: int | None
+    organization_id: int | None = None
+    ticket_key: str | None = None
     position: int
     created_at: datetime
     description_updated_by: str | None = None
@@ -54,17 +56,28 @@ class TaskUpdate(BaseModel):
 
 
 class FlowAI(BaseModel):
-    """Schema for FlowAI response output."""
-
-    question : str
-    is_static : bool
+    """Schema for FlowAI request body."""
+    question: str
+    is_static: bool = False
+    session_id: str | None = None
 
 
 class FlowAIOut(BaseModel):
     """Schema for FlowAI response output."""
-
     question: str
     is_static: bool = False
     answer: str | None = None
+    session_id: str | None = None
     
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AISessionOut(BaseModel):
+    """Schema for AI Chat session response."""
+    id: str
+    user_id: int
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
     model_config = ConfigDict(from_attributes=True)

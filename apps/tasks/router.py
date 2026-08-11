@@ -39,29 +39,25 @@ def create_task(
     return task
 
 
+from fastapi import APIRouter, Depends, Query, Header, status, HTTPException
+
 @router.get("/", response_model=PaginatedResponse[TaskOut])
 def read_user_tasks(
     page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
     limit: int = Query(default=10, ge=1, le=100, description="Number of items per page (max 100)"),
+    organization_id: int | None = Query(None),
+    x_organization_id: int | None = Header(None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get a paginated list of tasks belonging to the authenticated user.
-
-    Args:
-        page (int, optional): Page index starting at 1. Defaults to 1.
-        limit (int, optional): Page item limit (max 100). Defaults to 10.
-        db (Session): Database session dependency.
-        current_user (User): Authenticated user dependency.
-
-    Returns:
-        PaginatedResponse[TaskOut]: Paginated envelope containing task list and metadata.
-    """
+    """Get a paginated list of tasks belonging to the authenticated user, filtered by organization_id."""
+    target_org_id = organization_id or x_organization_id
     return crud.get_user_tasks_paginated(
         db,
         user_id=current_user.id,
         page=page,
-        limit=limit
+        limit=limit,
+        organization_id=target_org_id
     )
 
 
